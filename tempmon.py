@@ -88,29 +88,28 @@ class room:
 	
 		logging.debug("Temperature difference is: %f",temperature_difference)
 	
-		if temperature_difference < 0:
+		logging.debug("Checking if temperature needs to rise to meet next temp")
+		#Return what we'd expect the temperature to be based on current_temp, future_temp and time between the two. 
+		
+		ramp_coefficient = 0.00018 #degrees per second, manually calculated from grafana - TODO: generate this from this application and update in DB
+		#if ((time_difference * ramp_coefficient) + current_temp) >= next_temp:
+		seconds_to_future_temp = (next_temp - current_temp) / ramp_coefficient
+		if (seconds_to_future_temp >= time_difference):
+			logging.debug("It's time for the heating to come on so it can heat up in time to meet the target")
+			msg={"reason":"next_temp","setpoint":next_temp}
+			client.publish("myhome/"+self.floor+"/"+self.name+"/temperature_setpoint",payload=json.dumps(msg))
+			return next_temp
+		elif  temperature_difference < 0:
 			logging.debug("Temperature needs to fall")
 			#Returning the prev temp, this will cause the device to turn off
 			msg={"reason":"prev_temp","setpoint":previous_temp}
 			client.publish("myhome/"+self.floor+"/"+self.name+"/temperature_setpoint",payload=json.dumps(msg))
 			return previous_temp
 		else:
-			logging.debug("Checking if temperature needs to rise to meet next temp")
-			#Return what we'd expect the temperature to be based on current_temp, future_temp and time between the two. 
-			
-			ramp_coefficient = 0.00018 #degrees per second, manually calculated from grafana - TODO: generate this from this application and update in DB
-			#if ((time_difference * ramp_coefficient) + current_temp) >= next_temp:
-			seconds_to_future_temp = (next_temp - current_temp) / ramp_coefficient
-			if (seconds_to_future_temp >= time_difference):
-				logging.debug("It's time for the heating to come on so it can heat up in time to meet the target")
-				msg={"reason":"next_temp","setpoint":next_temp}
-				client.publish("myhome/"+self.floor+"/"+self.name+"/temperature_setpoint",payload=json.dumps(msg))
-				return next_temp
-			else:
-				logging.debug("Return previous scheduled temp")
-				msg={"reason":"prev_temp","setpoint":previous_temp}
-				client.publish("myhome/"+self.floor+"/"+self.name+"/temperature_setpoint",payload=json.dumps(msg))
-				return previous_temp
+			logging.debug("Return previous scheduled temp")
+			msg={"reason":"prev_temp","setpoint":previous_temp}
+			client.publish("myhome/"+self.floor+"/"+self.name+"/temperature_setpoint",payload=json.dumps(msg))
+			return previous_temp
 
 		#get temperature steps before and after current time
 		logging.error("Couldn't work out what temp to return - returning default temp")
