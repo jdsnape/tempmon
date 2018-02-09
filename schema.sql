@@ -14,6 +14,7 @@ create table scheduling (
 );
 
 create table overrides (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	room_id INTEGER,
 	temperature REAL,
 	start_time INTEGER,

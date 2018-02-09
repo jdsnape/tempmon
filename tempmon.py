@@ -44,13 +44,15 @@ class room:
 		logging.debug("Checking to see if we have any overrides programmed for current time %d",current_time)
 		c.execute('SELECT overrides.temperature,overrides.start_time, overrides.end_time FROM overrides \
 				JOIN rooms ON overrides.room_id = rooms.id \
-				WHERE rooms.room_name="{room_name}" and rooms.floor="{floor}" and overrides.start_time<{current_time} and overrides.end_time>{current_time} ORDER BY overrides.start_time DESC LIMIT 1'.\
-		format(room_name=self.name,floor=self.floor,current_time=current_time))
+				WHERE rooms.room_name="{room_name}" and rooms.floor="{floor}" and overrides.start_time<{current_time} and overrides.end_time>{current_time} ORDER BY overrides.end_time DESC LIMIT 1'.\
+		format(room_name=self.name,floor=self.floor,current_time=seconds_since_midnight))
 		all_rows = c.fetchall()
+		logging.debug(all_rows)
 		if len(all_rows)==1:
 			logging.debug("Override found: %f deg from %s to %s",all_rows[0][0],all_rows[0][1], all_rows[0][2])
 			msg={"reason":"override","setpoint":float(all_rows[0][0])}
 			client.publish("myhome/"+self.floor+"/"+self.name+"/temperature_setpoint",payload=json.dumps(msg))
+			conn.close()
 			return float(all_rows[0][0])
 
 		#Check the programmed temperature
@@ -77,6 +79,7 @@ class room:
 
 		logging.debug("Previous setpoint temp: %f, Next setpoint temp: %f",previous_temp, next_temp)
 
+		conn.close()
 
 
 		#We have current temp, a previous temp and a next temp
@@ -146,6 +149,51 @@ class room:
 		else:
 			logging.warning("We've changed state in last 15 minutes, cowardly refusing to change again")
 
+	def create_override(self,setpoint):
+		logging.debug("Initialising DB %s",Config.get('app','db'))
+		conn = sqlite3.connect(Config.get('app','db'))
+		c = conn.cursor()
+		current_time = int(time.time())
+
+		today=datetime.date.fromtimestamp(current_time)
+		seconds_since_midnight = int(time.time() - time.mktime(today.timetuple()))
+		day_of_week = datetime.datetime.today().weekday()
+		
+		logging.debug("We think the date/time is: current_time: %d, seconds_since_midnight: %d, day_of_week: %d",current_time, seconds_since_midnight, day_of_week)
+
+		c.execute('SELECT id from rooms where room_name="{room_name}"'.format(room_name=self.name))
+		room_id=c.fetchall()[0][0]	
+		logging.debug("Room ID %s", room_id) 
+		logging.debug("Removing overrides for current time")
+		c.execute('DELETE from overrides where id in (SELECT overrides.id from overrides \
+				JOIN rooms on overrides.room_id = rooms.id \
+				WHERE rooms.room_name="{room_name}" and rooms.floor="{floor}" and overrides.start_time<={seconds_since_midnight} and end_time>={seconds_since_midnight})'\
+				.format(room_name=self.name, floor=self.floor,seconds_since_midnight=seconds_since_midnight ))
+
+		logging.debug("Getting time of next programmed setpoint")
+
+		c.execute('SELECT seconds_of_day from scheduling \
+			JOIN rooms on scheduling.room_id=rooms.id \
+			WHERE rooms.room_name="{room_name}" and rooms.floor="{floor}" \
+			and day_of_week={day} and scheduling.seconds_of_day > {seconds_of_day} \
+			ORDER BY seconds_of_day ASC LIMIT 1;'.format(room_name=self.name,floor=self.floor,day=day_of_week,\
+			seconds_of_day = seconds_since_midnight))
+
+		all_rows = c.fetchall()
+		logging.debug("No. results %d",len(all_rows))
+		if len(all_rows)==1:
+			next_setpoint_time=int(all_rows[0][0])-1
+		else:
+			next_setpoint_time=86400
+			
+		logging.debug("Creating new override: %f deg from %s to %s, room_id %s", setpoint, seconds_since_midnight, next_setpoint_time, room_id)
+		c.execute('INSERT INTO overrides (temperature,start_time, end_time, room_id) VALUES (?,?,?,?)',(setpoint, seconds_since_midnight, next_setpoint_time, room_id))
+		conn.commit()
+		conn.close()
+
+
+
+
 def check_device_status(room,msg):
 	logging.debug("Received status message from controller: %s, relay_stat is %s",msg.payload,room.relay_state)
 	if msg.payload=="0" or msg.payload=="1":
@@ -185,7 +233,11 @@ def check_device_temp(room,msg):
 		logging.debug("No state change needed")
 
 	# Look at current temperature. Compare against target temperature, and turn on if below. 
-
+def check_setpoint(room, msg):
+	data=json.loads(msg.payload)
+	if data['reason']=='homekit_override':
+		logging.debug("We've received a temp from homekit: %f",data['setpoint'])
+		room.create_override(data['setpoint'])
 
 
 def unhandled_topic(room,msg):
@@ -194,6 +246,9 @@ def unhandled_topic(room,msg):
 mqtt_message_map = defaultdict(lambda: unhandled_topic)
 mqtt_message_map['status'] = check_device_status
 mqtt_message_map['temperature'] = check_device_temp
+mqtt_message_map['temperature_setpoint'] = check_setpoint
+
+#TODO: Add functionality to handle setpoint changes coming in over MQTT
 
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client, userdata, flags, rc):
