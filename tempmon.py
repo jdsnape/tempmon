@@ -19,7 +19,7 @@ class room:
 		current_time = int(time.time())
 		
 		self.threshold_time = (15*60) 
-
+		self.last_reported_temp=0
 		self.relay_state=-1 #we init this to -1 because we don't know on startup - will be set by first status call
 		self.setting_confirmed=False
 		self.confirmed_timestamp=0 #Time that the device confirmed it had processed a change to relay state
@@ -31,6 +31,8 @@ class room:
 		logging.debug("Initialising DB %s",Config.get('app','db'))
 		conn = sqlite3.connect(Config.get('app','db'))
 		c = conn.cursor()
+
+		self.last_reported_temp=current_temp
 
 		#We want a single time, so we're consistent accorss all queries
 		current_time = int(time.time())
@@ -195,6 +197,31 @@ class room:
 		conn.close()
 
 
+	def clear_override(self):
+		conn = sqlite3.connect(Config.get('app','db'))
+		c = conn.cursor()
+		current_time = int(time.time())
+
+		today=datetime.date.fromtimestamp(current_time)
+		seconds_since_midnight = int(time.time() - time.mktime(today.timetuple()))
+		day_of_week = datetime.datetime.today().weekday()
+		
+		logging.debug("We think the date/time is: current_time: %d, seconds_since_midnight: %d, day_of_week: %d",current_time, seconds_since_midnight, day_of_week)
+
+		c.execute('SELECT id from rooms where room_name="{room_name}"'.format(room_name=self.name))
+		room_id=c.fetchall()[0][0]	
+		logging.debug("Room ID %s", room_id) 
+		logging.debug("Removing overrides for current time")
+		c.execute('DELETE from overrides where id in (SELECT overrides.id from overrides \
+				JOIN rooms on overrides.room_id = rooms.id \
+				WHERE rooms.room_name="{room_name}" and rooms.floor="{floor}" and overrides.start_time<={seconds_since_midnight} and end_time>={seconds_since_midnight})'\
+				.format(room_name=self.name, floor=self.floor,seconds_since_midnight=seconds_since_midnight ))
+
+		#TODO: It would be good here to trigger check_device_temp with the last known temp from teh device so we don't have to wait for it to check in
+
+		conn.commit()
+		conn.close()
+	
 
 
 def check_device_status(room,msg):
@@ -242,6 +269,12 @@ def check_setpoint(room, msg):
 		logging.debug("We've received a temp from homekit: %f",data['setpoint'])
 		room.create_override(data['setpoint'])
 
+def check_mode(room, msg):
+	data=json.loads(msg.payload)
+	if data['state']=='auto':
+		logging.debug("We've received an auto message from homekit - clearing override")
+		room.clear_override()
+
 
 def unhandled_topic(room,msg):
 	logging.warning("Received message on unhandled topic %s",msg.topic)
@@ -250,6 +283,7 @@ mqtt_message_map = defaultdict(lambda: unhandled_topic)
 mqtt_message_map['status'] = check_device_status
 mqtt_message_map['temperature'] = check_device_temp
 mqtt_message_map['temperature_setpoint'] = check_setpoint
+mqtt_message_map['thermostat_ctrl'] = check_mode
 
 #TODO: Add functionality to handle setpoint changes coming in over MQTT
 
