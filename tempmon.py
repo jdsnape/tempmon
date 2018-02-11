@@ -47,13 +47,16 @@ class room:
 				WHERE rooms.room_name="{room_name}" and rooms.floor="{floor}" and overrides.start_time<{current_time} and overrides.end_time>{current_time} ORDER BY overrides.end_time DESC LIMIT 1'.\
 		format(room_name=self.name,floor=self.floor,current_time=seconds_since_midnight))
 		all_rows = c.fetchall()
-		logging.debug(all_rows)
 		if len(all_rows)==1:
 			logging.debug("Override found: %f deg from %s to %s",all_rows[0][0],all_rows[0][1], all_rows[0][2])
 			msg={"reason":"override","setpoint":float(all_rows[0][0])}
 			client.publish("myhome/"+self.floor+"/"+self.name+"/temperature_setpoint",payload=json.dumps(msg))
 			conn.close()
 			return float(all_rows[0][0])
+		logging.debug("Deleting all expired overrides")
+		#Do some override houskeeping (delete all overrides that ended before seconds_since_midnight)
+		c.execute('DELETE from overrides where end_time<{seconds_since_midnight}'.format(seconds_since_midnight=seconds_since_midnight))
+
 
 		#Check the programmed temperature
 		logging.debug("No overrides found. Checking programmed temperature")		
